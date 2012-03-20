@@ -165,7 +165,8 @@ namespace {
    * in the module */
   void CFCSS::insertFailBlocks(Module &M) {
     /* Format string for logging a detected control-flow error */
-    Constant *logFormat = ConstantArray::get(M.getContext(), "Control flow error detected in %s\n");
+    std::string logString = "Control flow error detected in %s\n";
+    Constant *logFormat = ConstantDataArray::getString(M.getContext(), logString);
     GlobalVariable *logFormatVar = new GlobalVariable(M, logFormat->getType(),
         true, GlobalValue::InternalLinkage,
         logFormat, "");
@@ -202,7 +203,7 @@ namespace {
         continue;
 
       /* Put the current function's name as a global variable */
-      Constant *funcName = ConstantArray::get(M.getContext(), MI->getName());
+      Constant *funcName = ConstantDataArray::getString(M.getContext(), MI->getName());
       GlobalVariable *funcNameVar = new GlobalVariable(M, funcName->getType(),
           true, GlobalVariable::InternalLinkage,
           funcName, "");
