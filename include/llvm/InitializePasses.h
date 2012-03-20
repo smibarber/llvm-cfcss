@@ -74,6 +74,7 @@ void initializeBlockPlacementPass(PassRegistry&);
 void initializeBranchFolderPassPass(PassRegistry&);
 void initializeBranchProbabilityInfoPass(PassRegistry&);
 void initializeBreakCriticalEdgesPass(PassRegistry&);
+void initializeCFCSSPass(PassRegistry&);
 void initializeCFGOnlyPrinterPass(PassRegistry&);
 void initializeCFGOnlyViewerPass(PassRegistry&);
 void initializeCFGPrinterPass(PassRegistry&);

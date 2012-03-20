@@ -26,6 +26,7 @@ void llvm::initializeInstrumentation(PassRegistry &Registry) {
   initializeGCOVProfilerPass(Registry);
   initializeAddressSanitizerPass(Registry);
   initializeThreadSanitizerPass(Registry);
+  initializeCFCSSPass(Registry);
 }
 
 /// LLVMInitializeInstrumentation - C binding for
