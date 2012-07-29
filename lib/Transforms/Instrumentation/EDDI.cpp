@@ -53,9 +53,10 @@ namespace {
       BasicBlock *addFailBlock(Module &M, Function &F, GlobalVariable *logFormat);
       void duplicateBlocks(std::vector<BasicBlock *> &blocks, BasicBlock *failBlock, Function &F);
       BasicBlock *duplicateBlock(BasicBlock *currentBlock, BasicBlock *failBlock, Function &F);
-      bool canDuplicate(Instruction *inst);
       void addComparisonBlocks(BasicBlock *origBlock, BasicBlock *nextBlock,
                                BasicBlock *dupBlock, BasicBlock *failBlock);
+      bool canDuplicate(Instruction *inst);
+      bool canDuplicateRange(BasicBlock::iterator BI, BasicBlock::iterator BE);
   };
 
   const std::string EDDI::failBlockName = "eddiFail";
@@ -153,13 +154,11 @@ void EDDI::duplicateBlocks(std::vector<BasicBlock *> &blocks, BasicBlock *failBl
 
   for (; VI != VE; VI++) {
     BasicBlock *currentBlock = *VI;
-    errs() << "Moving to next block in outer loop\n";
 
     BasicBlock *tail = duplicateBlock(currentBlock, failBlock, F);
     while (tail != NULL) {
       // A tail means that this BasicBlock was split and still has instructions
       // that need EDDI checking applied
-      errs() << "Running duplicateBlock\n";
       tail = duplicateBlock(tail, failBlock, F);
     }
   }
@@ -174,11 +173,9 @@ BasicBlock *EDDI::duplicateBlock(BasicBlock *currentBlock, BasicBlock *failBlock
                                      // check has occurred
   BasicBlock *tail = NULL;
 
-  errs() << "Current block length: " << currentBlock->getInstList().size() << "\n";
   for (; BI_end != BE; BI_end++) {
     Instruction *currentInst = BI_end;
     instructionCount++;
-    errs() << instructionCount << "\n";
 
     StoreInst *storeInst = dyn_cast<StoreInst>(currentInst);
     CallInst *callInst = dyn_cast<CallInst>(currentInst);
@@ -190,26 +187,21 @@ BasicBlock *EDDI::duplicateBlock(BasicBlock *currentBlock, BasicBlock *failBlock
       // then we can just continue processing the block as normal,
       // as it means that all instructions prior to this have been
       // checked
-      errs() << "Continuing...\n";
       continue;
     }
 
     bool isTerminator = (currentInst == currentBlock->getTerminator());
 
     // Hit the instruction limit, or at the end of a StoreBasicBlock
-    // Duplicate the block up to this point
-    if (instructionCount == InstMax ||
+    // Duplicate the block up to this point if there is at least
+    // one instruction that we can duplicate
+    if ((instructionCount == InstMax ||
         isTerminator ||
         storeInst != NULL ||
-        callInst != NULL) {
+        callInst != NULL) && canDuplicateRange(BI_start, BI_end)) {
       instructionCount = 0;
 
       BasicBlock *splitBlock = currentBlock->splitBasicBlock(BI_end);
-
-      errs() << "Split blocks into:\n";
-      currentBlock->print(errs());
-      errs() << "\n";
-      splitBlock->print(errs());
 
       if (!isTerminator)
         tail = splitBlock;
@@ -218,6 +210,7 @@ BasicBlock *EDDI::duplicateBlock(BasicBlock *currentBlock, BasicBlock *failBlock
       // continuing
       BasicBlock::iterator BI_dup = currentBlock->begin();
       BE = currentBlock->end();
+      BE--; // Move back to the last instruction (don't duplicate terminator)
 
       // Create the BasicBlock where we will insert duplicated instructions
       BasicBlock *checkBlock = BasicBlock::Create(F.getContext(), "", &F, splitBlock);
@@ -243,6 +236,9 @@ BasicBlock *EDDI::duplicateBlock(BasicBlock *currentBlock, BasicBlock *failBlock
 
       for (; BI_dup != BE; BI_dup++) {
         Instruction *dupInst = BI_dup;
+        if (!canDuplicate(dupInst))
+          continue;
+
         Instruction *newInst = dupInst->clone();
         instMap.insert(std::pair<Instruction *, Instruction *>(dupInst, newInst));
         checkBlock->getInstList().push_back(newInst);
@@ -294,11 +290,6 @@ void EDDI::addComparisonBlocks(BasicBlock *origBlock, BasicBlock *nextBlock,
   BasicBlock::iterator dupIE = dupBlock->end();
 
   for (; origII != origIE; origII++, dupII++) {
-    if (dupII == dupIE) {
-      errs() << "Block instruction count did not match\n";
-      return;
-    }
-
     Instruction *origInst = origII;
     Instruction *dupInst = dupII;
     Type *instType = origInst->getType();
@@ -341,8 +332,8 @@ void EDDI::addComparisonBlocks(BasicBlock *origBlock, BasicBlock *nextBlock,
   }
 
   unsigned int numBlocks = comparisonBlocks.size();
-  errs() << "numBlocks: " << numBlocks << "\n";
   IRBuilder<> dupTermBuilder(dupBlock);
+
   if (numBlocks > 0) {
     dupTermBuilder.CreateBr(comparisonBlocks[0]);
   }
@@ -350,13 +341,14 @@ void EDDI::addComparisonBlocks(BasicBlock *origBlock, BasicBlock *nextBlock,
     dupTermBuilder.CreateBr(nextBlock);
   }
 
-  for (unsigned int i = 0; i < numBlocks; numBlocks++) {
+  for (unsigned int i = 0; i < numBlocks; i++) {
     // Insert each comparison block into the function, and add branches
     BasicBlock *curComparisonBlock = comparisonBlocks[i];
     Instruction *comparison = &curComparisonBlock->front();
 
-    blockList.insert(BBI, curComparisonBlock);
+    curComparisonBlock->moveBefore(BBI);
     IRBuilder<> curBlockBuilder(curComparisonBlock);
+
     if (i == numBlocks - 1) {
       curBlockBuilder.CreateCondBr(comparison, failBlock, nextBlock);
     }
@@ -364,8 +356,29 @@ void EDDI::addComparisonBlocks(BasicBlock *origBlock, BasicBlock *nextBlock,
       curBlockBuilder.CreateCondBr(comparison, failBlock, comparisonBlocks[i+1]);
     }
   }
+}
 
-  F->print(errs());
+bool EDDI::canDuplicate(Instruction *inst) {
+  if (isa<CallInst>(inst) || isa<TerminatorInst>(inst))
+    return false;
+
+  Type *instType = inst->getType();
+  if (instType->isFloatingPointTy())
+    return true;
+  if (instType->isIntegerTy())
+    return true;
+
+  return false;
+}
+
+bool EDDI::canDuplicateRange(BasicBlock::iterator BI, BasicBlock::iterator BE) {
+  BasicBlock::iterator blockIter;
+  for (blockIter = BI; blockIter != BE; blockIter++) {
+    if (canDuplicate(BI))
+      return true;
+  }
+
+  return false;
 }
 
 char EDDI::ID = 0;
