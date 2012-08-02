@@ -289,7 +289,12 @@ void EDDI::addComparisonBlocks(BasicBlock *origBlock, BasicBlock *nextBlock,
   BasicBlock::iterator dupII = dupBlock->begin();
   BasicBlock::iterator dupIE = dupBlock->end();
 
-  for (; origII != origIE; origII++, dupII++) {
+  for (; origII != origIE; origII++) {
+    // There may be instructions that we did not duplicate remaining in the
+    // original block. Skip these instructions.
+    if (!canDuplicate(origII))
+      continue;
+
     Instruction *origInst = origII;
     Instruction *dupInst = dupII;
     Type *instType = origInst->getType();
@@ -315,6 +320,7 @@ void EDDI::addComparisonBlocks(BasicBlock *origBlock, BasicBlock *nextBlock,
       builder.CreateICmpNE(origInst, dupInst);
       errs() << "Made int compare\n";
     }
+    dupII++;
   }
 
   // Hook the dupBlock into the first comparison block
@@ -359,7 +365,10 @@ void EDDI::addComparisonBlocks(BasicBlock *origBlock, BasicBlock *nextBlock,
 }
 
 bool EDDI::canDuplicate(Instruction *inst) {
-  if (isa<CallInst>(inst) || isa<TerminatorInst>(inst))
+  // BasicBlock terminators should not be duplicated, and function calls count
+  // as terminators whether LLVM wants them to or not. PHINodes should not
+  // be duplicated either
+  if (isa<CallInst>(inst) || isa<TerminatorInst>(inst) || isa<PHINode>(inst))
     return false;
 
   Type *instType = inst->getType();
