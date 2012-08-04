@@ -35,6 +35,16 @@ static cl::opt<unsigned> InstMin("eddi-inst-min",
                             cl::desc("Mininmum number of instructions before adding an EDDI check"),
                             cl::value_desc("value"),
                             cl::init(1));
+static cl::opt<bool> DupLoads("eddi-dup-loads",
+                            cl::desc("Whether or not EDDI should duplicate loads"),
+                            cl::value_desc("true/false"),
+                            cl::init(true));
+static cl::opt<bool> CheckPtrs("eddi-check-ptrs",
+                            cl::desc("Whether or not EDDI should check pointer values"),
+                            cl::value_desc("true/false"),
+                            cl::init(true));
+
+
 
 namespace {
   class EDDI : public ModulePass {
@@ -57,6 +67,7 @@ namespace {
                                BasicBlock *dupBlock, BasicBlock *failBlock);
       bool canDuplicate(Instruction *inst);
       bool canDuplicateRange(BasicBlock::iterator BI, BasicBlock::iterator BE);
+      Instruction *findComparisonInst(BasicBlock *block);
   };
 
   const std::string EDDI::failBlockName = "eddiFail";
@@ -242,9 +253,6 @@ BasicBlock *EDDI::duplicateBlock(BasicBlock *currentBlock, BasicBlock *failBlock
         Instruction *newInst = dupInst->clone();
         instMap.insert(std::pair<Instruction *, Instruction *>(dupInst, newInst));
         checkBlock->getInstList().push_back(newInst);
-        errs() << "Duplicated ";
-        dupInst->print(errs());
-        errs() << "\n";
 
         // See if this instruction references any earlier ones in the instMap
         unsigned int numOperands = newInst->getNumOperands();
@@ -298,27 +306,36 @@ void EDDI::addComparisonBlocks(BasicBlock *origBlock, BasicBlock *nextBlock,
     Instruction *origInst = origII;
     Instruction *dupInst = dupII;
     Type *instType = origInst->getType();
+    BasicBlock *compareBlock = BasicBlock::Create(F->getContext(), "", F);
+    comparisonBlocks.push_back(compareBlock);
+    IRBuilder<> builder(compareBlock);
+
     if (instType->isFloatingPointTy()) {
       if (dupInst->getType() != instType) {
         errs() << "Instruction types do not match\n";
         return;
       }
-      BasicBlock *compareBlock = BasicBlock::Create(F->getContext(), "", F);
-      comparisonBlocks.push_back(compareBlock);
-      IRBuilder<> builder(compareBlock);
       builder.CreateFCmpUNE(origInst, dupInst);
-      errs() << "Made floating compare\n";
     }
     else if (instType->isIntegerTy()) {
       if (dupInst->getType() != instType) {
         errs() << "Instruction types do not match\n";
         return;
       }
-      BasicBlock *compareBlock = BasicBlock::Create(F->getContext(), "", F);
-      comparisonBlocks.push_back(compareBlock);
-      IRBuilder<> builder(compareBlock);
       builder.CreateICmpNE(origInst, dupInst);
-      errs() << "Made int compare\n";
+    }
+    else if (instType->isPointerTy()) {
+      if (dupInst->getType() != instType) {
+        errs() << "Instruction types do not match\n";
+        return;
+      }
+      // Pointer types require integer conversions first
+      // If we pick a 64-bit integer, we're fine on any architecture. See
+      // http://llvm.org/docs/GetElementPtr.html#how-is-gep-different-from-ptrtoint-arithmetic-and-inttoptr
+      Type *int64Type = Type::getInt64Ty(F->getContext());
+      Value *origPtrInt = builder.CreatePtrToInt(origInst, int64Type);
+      Value *dupPtrInt = builder.CreatePtrToInt(dupInst, int64Type);
+      builder.CreateICmpNE(origPtrInt, dupPtrInt);
     }
     dupII++;
   }
@@ -350,7 +367,7 @@ void EDDI::addComparisonBlocks(BasicBlock *origBlock, BasicBlock *nextBlock,
   for (unsigned int i = 0; i < numBlocks; i++) {
     // Insert each comparison block into the function, and add branches
     BasicBlock *curComparisonBlock = comparisonBlocks[i];
-    Instruction *comparison = &curComparisonBlock->front();
+    Instruction *comparison = findComparisonInst(curComparisonBlock);
 
     curComparisonBlock->moveBefore(BBI);
     IRBuilder<> curBlockBuilder(curComparisonBlock);
@@ -361,20 +378,38 @@ void EDDI::addComparisonBlocks(BasicBlock *origBlock, BasicBlock *nextBlock,
     else {
       curBlockBuilder.CreateCondBr(comparison, failBlock, comparisonBlocks[i+1]);
     }
+
+    EDDIBranchesAdded++;
   }
 }
 
 bool EDDI::canDuplicate(Instruction *inst) {
   // BasicBlock terminators should not be duplicated, and function calls count
-  // as terminators whether LLVM wants them to or not. PHINodes should not
-  // be duplicated either
-  if (isa<CallInst>(inst) || isa<TerminatorInst>(inst) || isa<PHINode>(inst))
+  // as terminators whether LLVM wants them to or not.
+  //
+  // Other instructions that should not be duplicated, at least without further
+  // thought: PHINode, AtomicRMWInst, AtomicCmpXchgInst, ShuffleVectorInst, 
+  // VAArgInst
+  if (isa<CallInst>(inst) ||
+      isa<TerminatorInst>(inst) ||
+      isa<PHINode>(inst) ||
+      isa<AtomicRMWInst>(inst) ||
+      isa<AtomicCmpXchgInst>(inst) ||
+      isa<ShuffleVectorInst>(inst) ||
+      isa<VAArgInst>(inst))
+    return false;
+
+  if (!DupLoads && isa<LoadInst>(inst))
     return false;
 
   Type *instType = inst->getType();
   if (instType->isFloatingPointTy())
     return true;
   if (instType->isIntegerTy())
+    return true;
+  if (instType->isPointerTy() &&
+      CheckPtrs &&
+      !isa<AllocaInst>(inst))
     return true;
 
   return false;
@@ -388,6 +423,19 @@ bool EDDI::canDuplicateRange(BasicBlock::iterator BI, BasicBlock::iterator BE) {
   }
 
   return false;
+}
+
+Instruction *EDDI::findComparisonInst(BasicBlock *block) {
+  BasicBlock::iterator BI = block->begin();
+  BasicBlock::iterator BE = block->end();
+
+  for (; BI != BE; BI++) {
+    Instruction *inst = BI;
+    if (isa<ICmpInst>(inst) || isa<FCmpInst>(inst))
+      return inst;
+  }
+
+  return NULL;
 }
 
 char EDDI::ID = 0;
