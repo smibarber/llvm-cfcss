@@ -50,15 +50,28 @@ namespace {
   class EDDI : public ModulePass {
     public:
       static char ID;
-      EDDI() : ModulePass(ID) {
+      EDDI(int instMin = -1, int instMax = -1) : ModulePass(ID) {
+        EDDI(instMin, instMax, DupLoads, CheckPtrs);
+      }
+
+      EDDI(int instMin, int instMax,
+           bool dupLoads, bool checkPtrs) : ModulePass(ID) {
+        DupInstMin = (instMin == -1 ? InstMin : instMin);
+        DupInstMax = (instMax == -1 ? InstMax : instMax);
+        DoCheckPtrs = checkPtrs;
+        DoDupLoads = dupLoads;
         initializeEDDIPass(*PassRegistry::getPassRegistry());
       }
 
       virtual bool runOnModule(Module &M);
-      virtual void getAnalysisUsage(AnalysisUsage &usage) const;
+//      virtual void getAnalysisUsage(AnalysisUsage &usage) const;
 
     private:
-      const static std::string failBlockName;
+      bool DoCheckPtrs;
+      bool DoDupLoads;
+      unsigned int DupInstMax;
+      unsigned int DupInstMin;
+      const static std::string FailBlockName;
 
       BasicBlock *addFailBlock(Module &M, Function &F, GlobalVariable *logFormat);
       void duplicateBlocks(std::vector<BasicBlock *> &blocks, BasicBlock *failBlock, Function &F);
@@ -70,7 +83,7 @@ namespace {
       Instruction *findComparisonInst(BasicBlock *block);
   };
 
-  const std::string EDDI::failBlockName = "eddiFail";
+  const std::string EDDI::FailBlockName = "eddiFail";
 }
 
 bool EDDI::runOnModule(Module &M) {
@@ -81,6 +94,7 @@ bool EDDI::runOnModule(Module &M) {
       true, GlobalValue::LinkOnceAnyLinkage, logFormat, "");
 
   std::vector<BasicBlock *> blocks;
+  errs() << "Running EDDI pass\n";
 
   Module::iterator MI = M.begin();
   Module::iterator ME = M.end();
@@ -89,8 +103,10 @@ bool EDDI::runOnModule(Module &M) {
     // Do not operate on function declarations
     if (F.isDeclaration())
       continue;
+    errs() << "EDDI: running on " << F.getName() << "\n";
 
-    LoopInfo &LI = getAnalysis<LoopInfo>(F);
+    // TODO: Fix libLTO linking issue so this can be used
+    // LoopInfo &LI = getAnalysis<LoopInfo>(F);
 
     // Iterate across all basic blocks in the function
     Function::iterator FI = F.begin();
@@ -108,16 +124,17 @@ bool EDDI::runOnModule(Module &M) {
   return true;
 }
 
-void EDDI::getAnalysisUsage(AnalysisUsage &AU) const {
-  AU.addRequired<LoopInfo>();
-  AU.addRequired<DominatorTree>();
-}
+// TODO: Fix libLTO linking issue so this can be used
+// void EDDI::getAnalysisUsage(AnalysisUsage &AU) const {
+//   AU.addRequired<LoopInfo>();
+//   AU.addRequired<DominatorTree>();
+// }
 
 /// addFailBlock - Adds a new BasicBlock to the end of the given function
 /// that will be branched to upon detection of an EDDI failure
 ///
 BasicBlock *EDDI::addFailBlock(Module &M, Function &F, GlobalVariable *logFormat) {
-  BasicBlock *failBlock = BasicBlock::Create(F.getContext(), failBlockName, &F);
+  BasicBlock *failBlock = BasicBlock::Create(F.getContext(), FailBlockName, &F);
 
   IRBuilder<> builder(failBlock);
 
@@ -206,7 +223,7 @@ BasicBlock *EDDI::duplicateBlock(BasicBlock *currentBlock, BasicBlock *failBlock
     // Hit the instruction limit, or at the end of a StoreBasicBlock
     // Duplicate the block up to this point if there is at least
     // one instruction that we can duplicate
-    if ((instructionCount == InstMax ||
+    if ((instructionCount == DupInstMax ||
         isTerminator ||
         storeInst != NULL ||
         callInst != NULL) && canDuplicateRange(BI_start, BI_end)) {
@@ -399,7 +416,7 @@ bool EDDI::canDuplicate(Instruction *inst) {
       isa<VAArgInst>(inst))
     return false;
 
-  if (!DupLoads && isa<LoadInst>(inst))
+  if (!DoDupLoads && isa<LoadInst>(inst))
     return false;
 
   Type *instType = inst->getType();
@@ -408,7 +425,7 @@ bool EDDI::canDuplicate(Instruction *inst) {
   if (instType->isIntegerTy())
     return true;
   if (instType->isPointerTy() &&
-      CheckPtrs &&
+      DoCheckPtrs &&
       !isa<AllocaInst>(inst))
     return true;
 
@@ -439,15 +456,28 @@ Instruction *EDDI::findComparisonInst(BasicBlock *block) {
 }
 
 char EDDI::ID = 0;
+INITIALIZE_PASS(EDDI, 
+                "eddi",
+                "Error Detection by Duplicated Instructions",
+                false,
+                false)
+// TODO: Fix libLTO linking issue so these pass dependencies can be used
+/*
 INITIALIZE_PASS_BEGIN(EDDI, 
                 "eddi",
                 "Error Detection by Duplicated Instructions",
                 false,
                 false)
-INITIALIZE_PASS_DEPENDENCY(LoopInfo)
 INITIALIZE_PASS_DEPENDENCY(DominatorTree)
+INITIALIZE_PASS_DEPENDENCY(LoopInfo)
 INITIALIZE_PASS_END(EDDI, 
                 "eddi",
                 "Error Detection by Duplicated Instructions",
                 false,
                 false)
+
+*/
+ModulePass *llvm::createEDDIPass() {
+  return new EDDI();
+}
+

@@ -131,7 +131,8 @@ public:
   /// populateModulePassManager - This sets up the primary pass manager.
   void populateModulePassManager(PassManagerBase &MPM);
   void populateLTOPassManager(PassManagerBase &PM, bool Internalize,
-                              bool RunInliner, bool DisableGVNLoadPRE = false);
+                              bool RunInliner, bool DisableGVNLoadPRE = false,
+                              bool RunEDDI = false, bool runCFCSS = false);
 };
 
 /// Registers a function for adding a standard set of passes.  This should be

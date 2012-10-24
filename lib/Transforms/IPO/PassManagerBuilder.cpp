@@ -27,6 +27,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Vectorize.h"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/Transforms/Instrumentation.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ManagedStatic.h"
 
@@ -215,7 +216,9 @@ void PassManagerBuilder::populateModulePassManager(PassManagerBase &MPM) {
 void PassManagerBuilder::populateLTOPassManager(PassManagerBase &PM,
                                                 bool Internalize,
                                                 bool RunInliner,
-                                                bool DisableGVNLoadPRE) {
+                                                bool DisableGVNLoadPRE,
+                                                bool RunEDDI,
+                                                bool RunCFCSS) {
   // Provide AliasAnalysis services for optimizations.
   addInitialAliasAnalysisPasses(PM);
 
@@ -287,6 +290,14 @@ void PassManagerBuilder::populateLTOPassManager(PassManagerBase &PM,
 
   // Now that we have optimized the program, discard unreachable functions.
   PM.add(createGlobalDCEPass());
+
+  // If we are to run QED passes, do them last to prevent optimizations
+  // from messing with them.
+  if (RunEDDI)
+    PM.add(createEDDIPass());
+
+  if (RunCFCSS)
+    PM.add(createCFCSSPass());
 }
 
 LLVMPassManagerBuilderRef LLVMPassManagerBuilderCreate(void) {

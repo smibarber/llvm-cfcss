@@ -9,6 +9,6 @@
 
 LEVEL := ../..
 TOOLNAME := llvm-ld
-LINK_COMPONENTS := ipo scalaropts linker archive bitwriter vectorize
+LINK_COMPONENTS := instrumentation ipo scalaropts linker archive bitwriter vectorize
 
 include $(LEVEL)/Makefile.common

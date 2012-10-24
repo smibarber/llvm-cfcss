@@ -1,5 +1,7 @@
 add_llvm_library(LLVMInstrumentation
   AddressSanitizer.cpp
+  CFCSS.cpp
+  EDDI.cpp
   EdgeProfiling.cpp
   FunctionBlackList.cpp
   GCOVProfiling.cpp

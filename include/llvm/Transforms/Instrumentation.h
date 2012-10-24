@@ -38,6 +38,12 @@ ModulePass *createAddressSanitizerPass();
 // Insert ThreadSanitizer (race detection) instrumentation
 FunctionPass *createThreadSanitizerPass();
 
+// Insert code for EDDI
+ModulePass *createEDDIPass();
+
+// Insert code for CFCSS
+ModulePass *createCFCSSPass();
+
 } // End llvm namespace
 
 #endif

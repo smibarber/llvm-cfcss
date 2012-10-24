@@ -52,6 +52,12 @@ static cl::opt<bool> DisableInline("disable-inlining", cl::init(false),
 static cl::opt<bool> DisableGVNLoadPRE("disable-gvn-loadpre", cl::init(false),
   cl::desc("Do not run the GVN load PRE pass"));
 
+static cl::opt<bool> RunCFCSSPass("cfcss", cl::init(false),
+  cl::desc("Run the CFCSS pass"));
+
+static cl::opt<bool> RunEDDIPass("eddi", cl::init(false),
+  cl::desc("Run the EDDI pass"));
+
 const char* LTOCodeGenerator::getVersionString() {
 #ifdef LLVM_VERSION_INFO
   return PACKAGE_NAME " version " PACKAGE_VERSION ", " LLVM_VERSION_INFO;
@@ -360,7 +366,9 @@ bool LTOCodeGenerator::generateObjectFile(raw_ostream &out,
   // we create the pass ourselves with the symbol list provided by the linker.
   PassManagerBuilder().populateLTOPassManager(passes, /*Internalize=*/false,
                                               !DisableInline,
-                                              DisableGVNLoadPRE);
+                                              DisableGVNLoadPRE,
+                                              RunEDDIPass,
+                                              RunCFCSSPass);
 
   // Make sure everything is still good.
   passes.add(createVerifierPass());
