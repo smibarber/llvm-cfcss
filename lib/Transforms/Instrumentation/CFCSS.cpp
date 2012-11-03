@@ -11,6 +11,7 @@
 #include "llvm/Function.h"
 #include "llvm/Instructions.h"
 #include "llvm/Module.h"
+#include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/ADT/Statistic.h"
@@ -43,10 +44,26 @@ namespace {
       long getSignature() { return this->signature; }
       void setFanInNode(bool fanInNode_) { this->fanInNode = fanInNode_; }
       long isFanInNode() { return this->fanInNode; }
+      bool callsParentFunctionOfNode(CFGraphNode *node);
 
       std::vector<CFGraphNode *> &getPreds() { return predecessors; }
       std::vector<CFGraphNode *> &getSuccs() { return successors; }
   };
+
+  bool CFGraphNode::callsParentFunctionOfNode(CFGraphNode *node) {
+    Function *parentFunc = node->getBasicBlock()->getParent();
+    BasicBlock::iterator II = block->begin();
+    BasicBlock::iterator IE = block->end();
+
+    for (; II != IE; II++) {
+      if (CallInst *inst = dyn_cast<CallInst>(II)) {
+        if (inst->getCalledFunction() == parentFunc) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
 
   class CFGraphEdge {
     private:
@@ -96,6 +113,9 @@ namespace {
        * about the nodes, including their CFCSS signatures */
       std::vector<CFGraphNode *> *verticesData;
 
+      /* The BasicBlocks that are not to be flow checked */
+      std::set<BasicBlock *> *noCheckBlocks;
+
       /* Inserts the CFCSS error-handling block into each function
        * in the module */
       void insertFailBlocks(Module &M);
@@ -135,6 +155,7 @@ namespace {
         this->callers = new std::map<Function *, std::vector<BasicBlock *> >();
         this->bbMap = new std::map<BasicBlock *, CFGraphNode *>();
         this->verticesData = new std::vector<CFGraphNode *>();
+        this->noCheckBlocks = new std::set<BasicBlock *>();
 
         /* Perform the transformation */
         this->insertFailBlocks(M);
@@ -147,6 +168,7 @@ namespace {
         delete edges;
         delete callers;
         delete bbMap;
+        delete noCheckBlocks;
 
         std::vector<CFGraphNode *>::iterator NI = verticesData->begin();
         std::vector<CFGraphNode *>::iterator NE = verticesData->end();
@@ -279,6 +301,7 @@ namespace {
           BasicBlock *split = curBlock->splitBasicBlock(++II);
           toProcess.push_back(split);
           this->vertices->insert(split);
+          this->noCheckBlocks->insert(curBlock);
 
           /* Insert an edge from the calling block to the called block */
           CFGraphEdge newEdge(curBlock, &calledFunc->getEntryBlock());
@@ -323,7 +346,14 @@ namespace {
        * destinations */
       if (BranchInst *inst = dyn_cast<BranchInst>(terminator)) {
         int numSuccessors = inst->getNumSuccessors();
-        if (numSuccessors == 1 && dyn_cast<CallInst>(inst->getPrevNode())) {
+        
+        /* CallInst followed by an unconditional BranchInst means a previously
+         * split node.
+         * getPrevNode will segfault if called on a block that has only one
+         * instruction, so check to make sure that is not the case */
+//        if (numSuccessors == 1 && &(*VI)->front() != inst &&
+//            dyn_cast_or_null<CallInst>(inst->getPrevNode())) {
+        if (noCheckBlocks->find(*VI) != noCheckBlocks->end()) {
           continue;
         }
         for (int i = 0 ; i < numSuccessors; i++) {
@@ -466,7 +496,7 @@ namespace {
           continue;
         }
         /* Insert instructions for loading, calculating, and storing G */
-        Instruction *firstInst = &block->front();
+        Instruction *firstInst = block->getFirstNonPHIOrDbg();
         CFGraphNode *pred = preds[0];
         uint64_t diffSig = pred->getSignature() ^ node->getSignature();
         ConstantInt *diffSigConst = ConstantInt::get(intType, diffSig);
@@ -492,10 +522,17 @@ namespace {
             /* Insert D calculation in predecessors */
             CFGraphNode *curPred = preds[i];
             uint64_t adjustSig = pred->getSignature() ^ curPred->getSignature();
-            BasicBlock *curPredBlock = curPred->getBasicBlock();
-            Instruction *predFirstInst = &curPredBlock->front();
             ConstantInt *adjustSigConst = ConstantInt::get(intType, adjustSig);
-            new StoreInst(adjustSigConst, D, predFirstInst);
+            
+            BasicBlock *curPredBlock = curPred->getBasicBlock();
+            if (curPred->callsParentFunctionOfNode(node)) {
+              /* Insert this StoreInst before the call to the current node's
+               * function */
+              new StoreInst(adjustSigConst, D, curPredBlock->getFirstNonPHIOrDbg());
+            }
+            else {
+              new StoreInst(adjustSigConst, D, curPredBlock->getTerminator());
+            }
           }
         }
         /* Find the iterator to split at */
@@ -581,4 +618,8 @@ INITIALIZE_PASS(CFCSS,
                 "Control flow checking via software signatures",
                 false,
                 false)
+
+ModulePass *llvm::createCFCSSPass() {
+  return new CFCSS();
+}
 
